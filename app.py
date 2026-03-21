@@ -277,21 +277,34 @@ def calcular_racha(df):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_portada(titulo, autor):
-    """Busca portada en Google Books directamente."""
+    """Busca portada: Google Books primero, Open Library como fallback."""
     import requests as _req
+    # Intento 1: Google Books
     for query in [f"{titulo} {autor}", titulo]:
         try:
             r = _req.get(
                 "https://www.googleapis.com/books/v1/volumes",
                 params={"q": query, "maxResults": 3},
-                timeout=8
+                timeout=6
             )
             for item in r.json().get("items", []):
                 links = item.get("volumeInfo", {}).get("imageLinks", {})
-                img = (links.get("thumbnail") or links.get("smallThumbnail", ""))
+                img = links.get("thumbnail") or links.get("smallThumbnail","")
                 if img:
                     return img.replace("zoom=1","zoom=0").replace("http://","https://")
         except: pass
+    # Intento 2: Open Library (más fiable en cloud)
+    try:
+        t_enc = titulo.replace(" ","+")
+        r2 = _req.get(
+            f"https://openlibrary.org/search.json?title={t_enc}&limit=1",
+            timeout=6
+        )
+        docs = r2.json().get("docs", [])
+        if docs and docs[0].get("cover_i"):
+            cover_id = docs[0]["cover_i"]
+            return f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg"
+    except: pass
     return ""
 
 def get_cover(row):
