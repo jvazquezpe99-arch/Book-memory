@@ -277,10 +277,21 @@ def calcular_racha(df):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_portada(titulo, autor):
-    try:
-        r = buscar_libros(f"{titulo} {autor}", max_results=1)
-        if r: return cover_url(r[0].get("imagen_portada_url",""))
-    except: pass
+    """Busca portada en Google Books directamente."""
+    import requests as _req
+    for query in [f"{titulo} {autor}", titulo]:
+        try:
+            r = _req.get(
+                "https://www.googleapis.com/books/v1/volumes",
+                params={"q": query, "maxResults": 3},
+                timeout=8
+            )
+            for item in r.json().get("items", []):
+                links = item.get("volumeInfo", {}).get("imageLinks", {})
+                img = (links.get("thumbnail") or links.get("smallThumbnail", ""))
+                if img:
+                    return img.replace("zoom=1","zoom=0").replace("http://","https://")
+        except: pass
     return ""
 
 def get_cover(row):
