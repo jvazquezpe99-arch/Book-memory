@@ -248,6 +248,11 @@ def badge_e(estado):
     cls=ESTADO_MAP.get(estado,"pendiente")
     return f'<span class="badge badge-{cls}">{estado}</span>'
 
+def badge_formato(formato):
+    if str(formato).strip() == "Kindle":
+        return '<span style="display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:800;background:#E3F2FD;color:#1565C0;margin:2px">📱 Kindle</span>'
+    return '<span style="display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:800;background:#E8F5E9;color:#2E7D32;margin:2px">📚 Físico</span>'
+
 def cover_url(url):
     u = safe_str(url)
     if u: return u.replace("zoom=1","zoom=0").replace("http://","https://")
@@ -903,6 +908,7 @@ function filt(){{
 
                 especial_pin = '<div style="position:absolute;top:8px;right:8px;background:linear-gradient(135deg,#FFD700,#FFA000);color:#3E2723;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;box-shadow:0 2px 6px rgba(0,0,0,0.2)">✨</div>' if especial else ""
 
+                bf = badge_formato(safe_str(row.get("formato","")))
                 card_html = (
                     '<div style="background:white;border-radius:16px;overflow:hidden;'
                     'box-shadow:0 4px 20px rgba(61,43,31,0.10);position:relative;'
@@ -914,8 +920,9 @@ function filt(){{
                     f'<div style="font-size:0.72rem;color:#9E8F84;font-style:italic;'
                     f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px">{safe_str(row["autor"])}</div>' +
                     (f'<div style="font-size:0.68rem;color:#C4783A;font-weight:700;margin-bottom:4px">📚 {saga_s}</div>' if saga_s else "") +
-                    '<div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:5px">' + bg + " " + be + '</div>' +
-                    f'<div style="color:#F4B942;font-size:0.75rem">{stars}</div>' +
+                    '<div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:4px">' + bg + " " + be + '</div>' +
+                    bf +
+                    f'<br><div style="color:#F4B942;font-size:0.75rem;margin-top:3px">{stars}</div>' +
                     '</div></div>'
                 )
                 st.markdown(card_html, unsafe_allow_html=True)
@@ -988,7 +995,7 @@ elif pagina == "🔍 Buscar Libro":
                             new_id = f"USR{str(uuid.uuid4())[:6].upper()}"
                             add_book({"id":new_id,"titulo":libro["titulo"],"autor":libro["autor"],
                                 "saga":"","orden_saga":"","genero":libro["genero"],"editorial":libro["editorial"],
-                                "formato":"Tapa Blanda","edicion_especial":0,"detalles_edicion":"",
+                                "formato":"Ebook","edicion_especial":0,"detalles_edicion":"",
                                 "imagen_portada_url":cover_url(libro["imagen_portada_url"]),
                                 "valoracion_personal":"","resena_personal":"","estado":"Quiero leer",
                                 "paginas_total":libro["paginas_total"],"paginas_leidas":0,
@@ -1008,7 +1015,7 @@ elif pagina == "🔍 Buscar Libro":
             with c2:
                 genero=st.selectbox("Género",TODOS_GENEROS)
                 editorial=st.text_input("Editorial")
-                formato=st.selectbox("Formato",["Tapa Blanda","Tapa Dura","Ebook","Audiolibro","Bolsillo"])
+                formato=st.selectbox("Formato",["Kindle","Tapa Blanda","Tapa Dura","Ebook","Audiolibro","Bolsillo"])
                 estado=st.selectbox("Estado",ESTADOS)
             edicion_esp=st.checkbox("✨ Edición especial"); detalles=st.text_input("Detalles")
             paginas=st.number_input("Páginas",min_value=0,value=300)
