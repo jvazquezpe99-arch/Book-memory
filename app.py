@@ -8,7 +8,7 @@ import calendar
 import uuid
 import json
 
-from database import init_db, cargar_desde_csv, get_all_books, update_book, add_book, delete_book
+from database import init_db, get_all_books, update_book, add_book, delete_book
 from google_books import buscar_libros, buscar_novedades, buscar_por_autor
 from recommender import recomendar_libros, libros_pendientes_saga
 
@@ -20,6 +20,10 @@ try:
 except:
     GROQ_API_KEY = _os.environ.get("GROQ_API_KEY", "")
 GROQ_OK = bool(GROQ_API_KEY)
+
+# Inicializar la base de datos (SQLite) sin recargar desde CSV cada vez
+init_db()
+# cargar_desde_csv("biblioteca_personal.csv")  # <- NO la llamamos al arrancar
 
 def _groq_chat(prompt, max_tokens=1500):
     """Llama al API de Groq (gratis) con llama-3."""
@@ -193,10 +197,15 @@ div[data-testid="metric-container"] {
 # ══════════════════════════════════════════════════════════════
 #  INIT DB
 # ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+#  INIT DB
+# ══════════════════════════════════════════════════════════════
 init_db()
-if not st.session_state["db_loaded"]:
-    cargar_desde_csv("biblioteca_personal.csv")
-    st.session_state["db_loaded"] = True
+
+# ══════════════════════════════════════════════════════════════
+#  CONSTANTS & HELPERS
+# ══════════════════════════════════════════════════════════════
+ESTADOS = ["Leído","Leyendo","Quiero leer","Pausado","Abandonado"]
 
 # ══════════════════════════════════════════════════════════════
 #  CONSTANTS & HELPERS
@@ -282,34 +291,70 @@ def calcular_racha(df):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_portada(titulo, autor):
-    """Busca portada: Google Books primero, Open Library como fallback."""
-    import requests as _req
-    # Intento 1: Google Books
-    for query in [f"{titulo} {autor}", titulo]:
+    """
+    Busca portada:
+    1) Google Books (varios tamaños de imagen)
+    2) Open Library como fallback
+    Devuelve URL https o "" si no encuentra nada.
+    """
+    import requests
+
+    titulo = (titulo or "").strip()
+    autor  = (autor or "").strip()
+    if not titulo:
+        return ""
+
+    GOOGLE_BOOKS_API = "https://www.googleapis.com/books/v1/volumes"
+
+    # Intento 1: Google Books, primero "título + autor", luego solo título
+    for query in [f"{titulo} {autor}".strip(), titulo]:
+        if not query:
+            continue
         try:
-            r = _req.get(
-                "https://www.googleapis.com/books/v1/volumes",
+            r = requests.get(
+                GOOGLE_BOOKS_API,
                 params={"q": query, "maxResults": 3},
                 timeout=6
             )
-            for item in r.json().get("items", []):
+            r.raise_for_status()
+            data = r.json()
+            for item in data.get("items", []):
                 links = item.get("volumeInfo", {}).get("imageLinks", {})
-                img = links.get("thumbnail") or links.get("smallThumbnail","")
+                img = (
+                    links.get("extraLarge")
+                    or links.get("large")
+                    or links.get("medium")
+                    or links.get("thumbnail")
+                    or links.get("smallThumbnail")
+                    or ""
+                )
                 if img:
-                    return img.replace("zoom=1","zoom=0").replace("http://","https://")
-        except: pass
-    # Intento 2: Open Library (más fiable en cloud)
+                    # Normalizar a https y mejor zoom
+                    return (
+                        img.replace("zoom=1", "zoom=0")
+                           .replace("http://", "https://")
+                    )
+        except Exception:
+            # Si falla esta búsqueda, probamos la siguiente
+            pass
+
+    # Intento 2: Open Library por título
     try:
-        t_enc = titulo.replace(" ","+")
-        r2 = _req.get(
-            f"https://openlibrary.org/search.json?title={t_enc}&limit=1",
-            timeout=6
-        )
-        docs = r2.json().get("docs", [])
-        if docs and docs[0].get("cover_i"):
-            cover_id = docs[0]["cover_i"]
-            return f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg"
-    except: pass
+        if titulo:
+            t_enc = titulo.replace(" ", "+")
+            r2 = requests.get(
+                f"https://openlibrary.org/search.json?title={t_enc}&limit=1",
+                timeout=6
+            )
+            r2.raise_for_status()
+            docs = r2.json().get("docs", [])
+            if docs and docs[0].get("cover_i"):
+                cover_id = docs[0]["cover_i"]
+                return f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg"
+    except Exception:
+        pass
+
+    # Si no hay nada, devolvemos cadena vacía para que salga el placeholder
     return ""
 
 def get_cover(row):
@@ -321,6 +366,47 @@ def get_cover(row):
             try: update_book(row["id"], {"imagen_portada_url": u})
             except: pass
     return u
+
+def render_nav_rapida():
+    """Tira de los 6 botones de navegación rápida con iconos."""
+    nav_rapida = [
+        ("📖","Biblioteca","📖 Mi Biblioteca"),
+        ("🔍","Buscar","🔍 Buscar Libro"),
+        ("✨","Para ti","✨ Recomendaciones"),
+        ("🆕","Novedades","🆕 Novedades"),
+        ("📅","Calendario","📅 Calendario"),
+        ("📊","Estadísticas","📊 Estadísticas"),
+    ]
+    st.markdown("""
+    <style>
+    div[data-testid="column"] .stButton > button[kind="secondary"],
+    div[data-testid="column"] .stButton > button {
+        background: white !important;
+        color: #3D2B1F !important;
+        border: 2px solid transparent !important;
+        border-radius: 18px !important;
+        padding: 18px 8px !important;
+        font-size: 0.82rem !important;
+        font-weight: 800 !important;
+        box-shadow: 0 4px 16px rgba(61,43,31,0.08) !important;
+        min-height: 85px !important;
+        transition: all 0.2s !important;
+    }
+    div[data-testid="column"] .stButton > button:hover {
+        border-color: #C4783A !important;
+        transform: translateY(-4px) !important;
+        box-shadow: 0 8px 24px rgba(196,120,58,0.2) !important;
+        background: #FDF6EE !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    cols6 = st.columns(6)
+    for i, (ico, lab, dest) in enumerate(nav_rapida):
+        with cols6[i]:
+            if st.button(f"{ico}  {lab}", key=f"ir_{dest}", use_container_width=True):
+                ir_a(dest)
+
+
 
 # ══════════════════════════════════════════════════════════════
 #  SIDEBAR
@@ -487,46 +573,9 @@ if pagina == "🏠 Inicio":
     """
     components.html(_hero_html, height=130, scrolling=False)
 
-    # Nav rápida con botones funcionales
-    nav_rapida = [
-        ("📖","Biblioteca","📖 Mi Biblioteca"),
-        ("🔍","Buscar","🔍 Buscar Libro"),
-        ("✨","Para ti","✨ Recomendaciones"),
-        ("🆕","Novedades","🆕 Novedades"),
-        ("📅","Calendario","📅 Calendario"),
-        ("📊","Estadísticas","📊 Estadísticas"),
-    ]
-    # Nav rápida — un solo st.button con CSS que lo hace parecer card visual
-    st.markdown("""
-    <style>
-    div[data-testid="column"] .stButton > button[kind="secondary"],
-    div[data-testid="column"] .stButton > button {
-        background: white !important;
-        color: #3D2B1F !important;
-        border: 2px solid transparent !important;
-        border-radius: 18px !important;
-        padding: 18px 8px !important;
-        font-size: 0.82rem !important;
-        font-weight: 800 !important;
-        box-shadow: 0 4px 16px rgba(61,43,31,0.08) !important;
-        min-height: 85px !important;
-        transition: all 0.2s !important;
-    }
-    div[data-testid="column"] .stButton > button:hover {
-        border-color: #C4783A !important;
-        transform: translateY(-4px) !important;
-        box-shadow: 0 8px 24px rgba(196,120,58,0.2) !important;
-        background: #FDF6EE !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    cols6 = st.columns(6)
-    for i,(ico,lab,dest) in enumerate(nav_rapida):
-        with cols6[i]:
-            if st.button(f"{ico}\n\n{lab}", key=f"ir_{dest}", use_container_width=True):
-                ir_a(dest)
+        # Navegación rápida principal
+    render_nav_rapida()
 
-    st.markdown("")
     if not df.empty:
         col_cal, col_mid, col_right = st.columns([1.1, 1, 1])
 
@@ -667,6 +716,7 @@ if pagina == "🏠 Inicio":
 #  MI BIBLIOTECA — Portadas visuales + Alpine filtros instantáneos
 # ══════════════════════════════════════════════════════════════
 elif pagina == "📖 Mi Biblioteca":
+    render_nav_rapida()
     st.markdown('<p class="section-title">📖 Mi Biblioteca</p>', unsafe_allow_html=True)
     df = get_all_books()
 
@@ -744,72 +794,6 @@ elif pagina == "📖 Mi Biblioteca":
     else:
         df["valoracion_personal"] = pd.to_numeric(df["valoracion_personal"], errors="coerce")
         df["_ord_num"] = pd.to_numeric(df["orden_saga"], errors="coerce").fillna(0)
-
-        # ── Alpine.js barra de búsqueda y filtros INSTANTÁNEA ──
-        generos_opts_j = json.dumps(["Todos"]+sorted(df["genero"].dropna().unique().tolist()))
-        estados_opts_j = json.dumps(["Todos"]+ESTADOS)
-        sagas_opts_j = json.dumps(["Todas"]+sorted([s for s in df["saga"].dropna().unique()
-                        if s and str(s).strip() and str(s).lower() not in ["no","nan",""]]))
-
-        components.html(f"""
-<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js" defer></script>
-<style>
-* {{ box-sizing:border-box; margin:0; padding:0; font-family:'Nunito','Segoe UI',sans-serif; }}
-.filters {{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:4px 0; }}
-.filters input,.filters select {{
-    border:2px solid #E8DDD4; border-radius:10px; padding:8px 12px;
-    font-size:13px; background:white; color:#3D2B1F; outline:none;
-    transition:border-color .2s; font-family:inherit;
-}}
-.filters input:focus,.filters select:focus {{ border-color:#C4783A; }}
-.filters input.srch {{ flex:1; min-width:200px; }}
-.filters select {{ min-width:130px; }}
-.chip {{
-    background:#FDF6EE; border:2px solid #E8DDD4; color:#9E8F84;
-    border-radius:10px; padding:8px 14px; font-size:12px; font-weight:700;
-    cursor:pointer; font-family:inherit; transition:all .2s; white-space:nowrap;
-}}
-.chip.on {{ background:#C4783A; border-color:#C4783A; color:white; }}
-.stats {{ font-size:12px; color:#9E8F84; padding:6px 2px; }}
-.stats b {{ color:#3D2B1F; }}
-</style>
-<div x-data="filt()">
-  <div class="filters">
-    <input class="srch" type="text" x-model="b" @input="send()" placeholder="🔍 Buscar título o autor...">
-    <select x-model="g" @change="send()">
-      <template x-for="o in {generos_opts_j}"><option :value="o" x-text="o"></option></template>
-    </select>
-    <select x-model="e" @change="send()">
-      <template x-for="o in {estados_opts_j}"><option :value="o" x-text="o"></option></template>
-    </select>
-    <select x-model="s" @change="send()">
-      <template x-for="o in {sagas_opts_j}"><option :value="o" x-text="o"></option></template>
-    </select>
-    <select x-model="ord" @change="send()">
-      <option value="az">A-Z Título</option>
-      <option value="autor">Autor</option>
-      <option value="val">⭐ Valoración</option>
-      <option value="saga">Saga</option>
-    </select>
-    <button class="chip" :class="{{on:esp}}" @click="esp=!esp; send()">✨ Especiales</button>
-  </div>
-</div>
-<script>
-function filt(){{
-  return {{
-    b:"",g:"Todos",e:"Todos",s:"Todas",ord:"az",esp:false,
-    send(){{
-      const params=new URLSearchParams({{
-        action:"filter",b:this.b,g:this.g,e:this.e,s:this.s,ord:this.ord,esp:this.esp?1:0
-      }});
-      window.parent.history.replaceState(null,"","?"+params.toString());
-      // Trigger Streamlit rerun via postMessage
-      window.parent.postMessage({{type:"streamlit:setComponentValue",value:{{b:this.b,g:this.g,e:this.e,s:this.s,ord:this.ord,esp:this.esp}}}}, "*");
-    }}
-  }}
-}}
-</script>
-""", height=80, scrolling=False)
 
         # ── Leer filtros de session_state (persistentes) ──────
         c1f,c2f,c3f,c4f = st.columns(4)
@@ -969,6 +953,7 @@ function filt(){{
 #  BUSCAR LIBRO
 # ══════════════════════════════════════════════════════════════
 elif pagina == "🔍 Buscar Libro":
+    render_nav_rapida()
     st.markdown('<p class="section-title">🔍 Buscar Libros</p>', unsafe_allow_html=True)
     tab1,tab2 = st.tabs(["🌐 Google Books","✍️ Añadir manual"])
     with tab1:
@@ -1031,6 +1016,7 @@ elif pagina == "🔍 Buscar Libro":
 #  ESTADÍSTICAS
 # ══════════════════════════════════════════════════════════════
 elif pagina == "📊 Estadísticas":
+    render_nav_rapida()
     st.markdown('<p class="section-title">📊 Mis Estadísticas</p>', unsafe_allow_html=True)
     df = get_all_books()
     if df.empty: st.info("Añade libros para ver estadísticas.")
@@ -1112,10 +1098,13 @@ elif pagina == "📊 Estadísticas":
                     yaxis=dict(showticklabels=False, showgrid=False, zeroline=False),
                 )
                 # Línea media
-                fig_v.add_vline(x=f"{'★'*int(media_val)}{'½' if media_val-int(media_val)>=0.5 else ''}",
-                    line_dash="dot", line_color="#C4783A",
-                    annotation_text=f"Media: {media_val:.1f}★",
-                    annotation_position="top")
+                fig_v.add_vline(
+                x=media_val,  # valor numérico, no string con estrellas
+                line_dash="dot",
+                line_color="#C4783A",
+                annotation_text=f"Media: {media_val:.1f}★",
+                annotation_position="top"
+                )
                 st.plotly_chart(fig_v, use_container_width=True)
             else:
                 st.info("Valora tus libros para ver esta gráfica.")
@@ -1210,6 +1199,7 @@ elif pagina == "📊 Estadísticas":
 #  RECOMENDACIONES
 # ══════════════════════════════════════════════════════════════
 elif pagina == "✨ Recomendaciones":
+    render_nav_rapida()
     st.markdown('<p class="section-title">✨ Para ti</p>', unsafe_allow_html=True)
     df = get_all_books()
     tab1, tab2 = st.tabs(["🤖 IA","📊 Por similitud"])
@@ -1349,6 +1339,7 @@ Devuelve SOLO este JSON sin texto extra:
 #  NOVEDADES
 # ══════════════════════════════════════════════════════════════
 elif pagina == "🆕 Novedades":
+    render_nav_rapida()
     st.markdown('<p class="section-title">🆕 Novedades</p>', unsafe_allow_html=True)
     GENEROS_B = ["Romantasy","Fantasy","Romance","Young Adult","Thriller","Historical Fiction","Science Fiction","Dystopia","Horror","Mystery","Poetry"]
     c1,c2 = st.columns(2)
@@ -1380,6 +1371,7 @@ elif pagina == "🆕 Novedades":
 #  CALENDARIO
 # ══════════════════════════════════════════════════════════════
 elif pagina == "📅 Calendario":
+    render_nav_rapida()
     st.markdown('<p class="section-title">📅 Calendario</p>', unsafe_allow_html=True)
     df = get_all_books(); hoy = date.today()
     tab_v,tab_r = st.tabs(["📆 Vista mensual","✏️ Registrar fechas"])
@@ -1475,6 +1467,7 @@ elif pagina == "📅 Calendario":
 #  MIS METAS
 # ══════════════════════════════════════════════════════════════
 elif pagina == "🎯 Mis Metas":
+    render_nav_rapida()
     st.markdown('<p class="section-title">🎯 Mis Metas</p>', unsafe_allow_html=True)
     df = get_all_books()
     leidos_n = len(df[df["estado"]=="Leído"]) if not df.empty else 0
